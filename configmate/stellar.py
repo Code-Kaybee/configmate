@@ -2,15 +2,25 @@
 Stellar configuration extension for ConfigMate.
 """
 
-from typing import Any
+from typing import Any, Dict
 
 from .config import Config
+
+
+class StellarEndpointError(ValueError):
+    """Raised when a Stellar endpoint URL cannot be resolved.
+
+    Custom network names are supported, but ConfigMate does not guess an
+    endpoint for them. When a network other than Testnet, Mainnet, or
+    Futurenet is selected, the matching endpoint URL must be supplied
+    explicitly.
+    """
 
 
 class StellarConfig(Config):
     """A configuration manager with Stellar-specific defaults and validation."""
 
-    # Default horizon URLs for known networks
+    # Default Horizon URLs for known networks
     _NETWORK_HORIZON_URLS = {
         'testnet': 'https://horizon-testnet.stellar.org',
         'mainnet': 'https://horizon.stellar.org',
@@ -22,43 +32,67 @@ class StellarConfig(Config):
         'futurenet': 'https://rpc-futurenet.stellar.org',
     }
 
+    _NETWORK_KEY = 'stellar.network'
+    _HORIZON_URL_KEY = 'stellar.horizon_url'
+    _SOROBAN_RPC_URL_KEY = 'stellar.soroban_rpc_url'
+    _HORIZON_ENV_VAR = 'STELLAR_HORIZON_URL'
+    _SOROBAN_RPC_ENV_VAR = 'STELLAR_SOROBAN_RPC_URL'
+
     def __init__(self):
-        """Initialize Stellar configuration with defaults for network and horizon URL."""
+        """Initialize Stellar configuration with Testnet defaults."""
         super().__init__()
-        self._horizon_url_explicit = False
-        self._soroban_rpc_url_explicit = False
-        self.set_default('stellar.network', 'testnet', str)
-        self.set_default('stellar.horizon_url', self._NETWORK_HORIZON_URLS['testnet'], str)
+        self._explicit_endpoint_urls = {
+            self._HORIZON_URL_KEY: False,
+            self._SOROBAN_RPC_URL_KEY: False,
+        }
+        self.set_default(self._NETWORK_KEY, 'testnet', str)
         self.set_default(
-            'stellar.soroban_rpc_url',
+            self._HORIZON_URL_KEY,
+            self._NETWORK_HORIZON_URLS['testnet'],
+            str,
+        )
+        self.set_default(
+            self._SOROBAN_RPC_URL_KEY,
             self._NETWORK_SOROBAN_RPC_URLS['testnet'],
             str,
         )
-        self.validate('stellar.network', self._validate_network)
+        self.validate(self._NETWORK_KEY, self._validate_network)
 
     def _validate_network(self, value: str) -> bool:
-        """Validate that the network is a string (we allow any string for custom networks).
-        In the future, we could restrict to known networks, but we allow flexibility.
+        """Validate that the network is a string.
+
+        Any name is accepted so local and provider-specific networks remain
+        supported. Unknown names must provide explicit endpoint URLs, which
+        the endpoint getters enforce.
         """
         return isinstance(value, str)
 
+    @staticmethod
+    def _is_url_value(value: Any) -> bool:
+        """Return True when a configured value can be used as an endpoint URL."""
+        return isinstance(value, str) and value != ''
+
     def set(self, key: str, value: Any) -> None:
-        """Set a value and keep the default Horizon URL in sync with the network."""
-        if key == 'stellar.horizon_url':
-            self._horizon_url_explicit = True
-        elif key == 'stellar.soroban_rpc_url':
-            self._soroban_rpc_url_explicit = True
-        elif key == 'stellar.network':
-            default_url = self._NETWORK_HORIZON_URLS['testnet']
-            default_rpc_url = self._NETWORK_SOROBAN_RPC_URLS['testnet']
-            if isinstance(value, str):
-                default_url = self._NETWORK_HORIZON_URLS.get(value, default_url)
-                default_rpc_url = self._NETWORK_SOROBAN_RPC_URLS.get(value, default_rpc_url)
-            if not self._horizon_url_explicit:
-                super().set('stellar.horizon_url', default_url)
-            if not self._soroban_rpc_url_explicit:
-                super().set('stellar.soroban_rpc_url', default_rpc_url)
+        """Set a value and keep endpoint defaults aligned with the network.
+
+        Explicitly configured endpoint URLs are never overwritten. Known
+        networks receive their matching defaults, while any other network
+        clears the defaults so a Testnet URL is never assumed.
+        """
+        if key in self._explicit_endpoint_urls:
+            self._explicit_endpoint_urls[key] = self._is_url_value(value)
+        elif key == self._NETWORK_KEY and isinstance(value, str):
+            self._sync_endpoint_defaults(value)
         super().set(key, value)
+
+    def _sync_endpoint_defaults(self, network: str) -> None:
+        """Apply network-matched defaults to endpoints that were not overridden."""
+        if not self._explicit_endpoint_urls[self._HORIZON_URL_KEY]:
+            super().set(self._HORIZON_URL_KEY,
+                        self._NETWORK_HORIZON_URLS.get(network))
+        if not self._explicit_endpoint_urls[self._SOROBAN_RPC_URL_KEY]:
+            super().set(self._SOROBAN_RPC_URL_KEY,
+                        self._NETWORK_SOROBAN_RPC_URLS.get(network))
 
     def load_from_env(self, prefix: str = 'STELLAR_', lowercase_keys: bool = True,
                       separator: str = '__') -> None:
@@ -76,27 +110,61 @@ class StellarConfig(Config):
             key_prefix='stellar',
         )
 
+    def _resolve_endpoint(
+        self,
+        key: str,
+        network_urls: Dict[str, str],
+        env_var: str,
+        endpoint_name: str,
+    ) -> str:
+        """Resolve an endpoint URL, refusing to guess for custom networks."""
+        value = self.get(key)
+        if self._is_url_value(value):
+            return value
+
+        network = self.get(self._NETWORK_KEY)
+        if isinstance(network, str) and network in network_urls:
+            return network_urls[network]
+
+        raise StellarEndpointError(
+            f"No {endpoint_name} URL is configured for network {network!r}. "
+            f"Custom networks must set '{key}' (for example with the "
+            f"{env_var} environment variable) to the {endpoint_name} "
+            f"endpoint for that network."
+        )
+
     def get_horizon_url(self) -> str:
         """Get the horizon URL for the current network.
 
         Returns:
-            The horizon URL from configuration, or the default for the network if not set.
+            The configured Horizon URL, or the default for a known network.
+
+        Raises:
+            StellarEndpointError: If the network is not a known network and no
+                custom Horizon URL is configured.
         """
-        url = self.get('stellar.horizon_url')
-        if url:
-            return url
-        network = self.get('stellar.network')
-        return self._NETWORK_HORIZON_URLS.get(network, self._NETWORK_HORIZON_URLS['testnet'])
+        return self._resolve_endpoint(
+            self._HORIZON_URL_KEY,
+            self._NETWORK_HORIZON_URLS,
+            self._HORIZON_ENV_VAR,
+            'Horizon',
+        )
 
     def get_soroban_rpc_url(self) -> str:
-        """Get the Soroban RPC URL for the current network."""
-        url = self.get('stellar.soroban_rpc_url')
-        if url:
-            return url
-        network = self.get('stellar.network')
-        return self._NETWORK_SOROBAN_RPC_URLS.get(
-            network,
-            self._NETWORK_SOROBAN_RPC_URLS['testnet'],
+        """Get the Soroban RPC URL for the current network.
+
+        Returns:
+            The configured Soroban RPC URL, or the default for a known network.
+
+        Raises:
+            StellarEndpointError: If the network is not a known network and no
+                custom Soroban RPC URL is configured.
+        """
+        return self._resolve_endpoint(
+            self._SOROBAN_RPC_URL_KEY,
+            self._NETWORK_SOROBAN_RPC_URLS,
+            self._SOROBAN_RPC_ENV_VAR,
+            'Soroban RPC',
         )
 
     def is_known_network(self) -> bool:
@@ -105,5 +173,5 @@ class StellarConfig(Config):
         Returns:
             True if the network is known, False otherwise.
         """
-        network = self.get('stellar.network')
-        return network in self._NETWORK_HORIZON_URLS
+        network = self.get(self._NETWORK_KEY)
+        return isinstance(network, str) and network in self._NETWORK_HORIZON_URLS

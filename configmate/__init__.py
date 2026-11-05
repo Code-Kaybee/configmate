@@ -1,7 +1,7 @@
 """ConfigMate - Advanced configuration management utility."""
 
 from .config import Config, ValidationError
-from .stellar import StellarConfig
+from .stellar import StellarConfig, StellarEndpointError
 
 # Convenience instance
 config = Config()
@@ -11,5 +11,6 @@ __all__ = [
     "Config",
     "ValidationError",
     "StellarConfig",
+    "StellarEndpointError",
     "config",
 ]
