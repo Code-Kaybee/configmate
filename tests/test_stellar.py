@@ -2,8 +2,30 @@
 Tests for StellarConfig
 """
 
-import os
-from configmate.stellar import StellarConfig
+import json
+
+import pytest
+
+from configmate.stellar import StellarConfig, StellarEndpointError
+
+
+KNOWN_NETWORK_URLS = [
+    (
+        'testnet',
+        'https://horizon-testnet.stellar.org',
+        'https://soroban-testnet.stellar.org',
+    ),
+    (
+        'mainnet',
+        'https://horizon.stellar.org',
+        'https://soroban-rpc.stellar.org',
+    ),
+    (
+        'futurenet',
+        'https://horizon-futurenet.stellar.org',
+        'https://rpc-futurenet.stellar.org',
+    ),
+]
 
 
 def test_defaults():
@@ -11,30 +33,44 @@ def test_defaults():
     config = StellarConfig()
     assert config.get('stellar.network') == 'testnet'
     assert config.get('stellar.horizon_url') == 'https://horizon-testnet.stellar.org'
+    assert config.get('stellar.soroban_rpc_url') == 'https://soroban-testnet.stellar.org'
+    assert config.get_horizon_url() == 'https://horizon-testnet.stellar.org'
     assert config.get_soroban_rpc_url() == 'https://soroban-testnet.stellar.org'
 
 
-def test_get_horizon_url():
-    """Test get_horizon_url method."""
+@pytest.mark.parametrize('network,horizon_url,soroban_rpc_url', KNOWN_NETWORK_URLS)
+def test_known_networks_keep_endpoint_defaults(network, horizon_url, soroban_rpc_url):
+    """Known networks resolve to their matching Horizon and Soroban RPC URLs."""
     config = StellarConfig()
-    # Default horizon URL for testnet
-    assert config.get_horizon_url() == 'https://horizon-testnet.stellar.org'
 
+    config.set('stellar.network', network)
+
+    assert config.get('stellar.horizon_url') == horizon_url
+    assert config.get('stellar.soroban_rpc_url') == soroban_rpc_url
+    assert config.get_horizon_url() == horizon_url
+    assert config.get_soroban_rpc_url() == soroban_rpc_url
+    assert config.is_known_network() is True
+
+
+def test_known_network_defaults_are_used_when_endpoint_is_reset():
+    """Resetting an endpoint falls back to the default of a known network."""
+    config = StellarConfig()
     config.set('stellar.network', 'mainnet')
-    assert config.get('stellar.horizon_url') == 'https://horizon.stellar.org'
-    assert config.get_horizon_url() == 'https://horizon.stellar.org'
-    config.set('stellar.network', 'unknown')
-    config.set('stellar.network', 'futurenet')
-    assert config.get_horizon_url() == 'https://horizon-futurenet.stellar.org'
-
-    # Set custom horizon URL
     config.set('stellar.horizon_url', 'https://custom.example')
-    assert config.get_horizon_url() == 'https://custom.example'
 
-    # Set network to mainnet, horizon URL should default to mainnet if not set
-    config.set('stellar.network', 'mainnet')
     config.set('stellar.horizon_url', None)
+
     assert config.get_horizon_url() == 'https://horizon.stellar.org'
+
+
+def test_explicit_endpoint_overrides_known_network_default():
+    """An explicitly configured endpoint is used for known networks too."""
+    config = StellarConfig()
+    config.set('stellar.network', 'mainnet')
+    config.set('stellar.horizon_url', 'https://custom.example')
+
+    assert config.get_horizon_url() == 'https://custom.example'
+    assert config.get_soroban_rpc_url() == 'https://soroban-rpc.stellar.org'
 
 
 def test_soroban_rpc_url_tracks_network_until_overridden():
@@ -51,13 +87,163 @@ def test_soroban_rpc_url_tracks_network_until_overridden():
     assert config.get_soroban_rpc_url() == 'https://rpc.custom.example'
 
 
-def test_soroban_rpc_url_loads_from_environment(monkeypatch):
-    monkeypatch.setenv('STELLAR_SOROBAN_RPC_URL', 'https://rpc.env.example')
+def test_custom_network_never_inherits_testnet_endpoints():
+    """An unrecognized network clears both endpoint defaults."""
+    config = StellarConfig()
+
+    config.set('stellar.network', 'local')
+
+    assert config.get('stellar.horizon_url') is None
+    assert config.get('stellar.soroban_rpc_url') is None
+    assert config.is_known_network() is False
+
+    with pytest.raises(StellarEndpointError) as horizon_error:
+        config.get_horizon_url()
+    assert "'stellar.horizon_url'" in str(horizon_error.value)
+    assert 'STELLAR_HORIZON_URL' in str(horizon_error.value)
+    assert 'testnet' not in str(horizon_error.value).lower()
+
+    with pytest.raises(StellarEndpointError) as soroban_error:
+        config.get_soroban_rpc_url()
+    assert "'stellar.soroban_rpc_url'" in str(soroban_error.value)
+    assert 'STELLAR_SOROBAN_RPC_URL' in str(soroban_error.value)
+
+    # The custom endpoint error remains catchable as a ValueError.
+    assert isinstance(horizon_error.value, ValueError)
+
+
+def test_custom_network_with_only_horizon_url():
+    """Configuring only the Horizon URL leaves Soroban RPC unresolved."""
+    config = StellarConfig()
+    config.set('stellar.network', 'local')
+    config.set('stellar.horizon_url', 'https://horizon.local.example')
+
+    assert config.get_horizon_url() == 'https://horizon.local.example'
+
+    with pytest.raises(StellarEndpointError):
+        config.get_soroban_rpc_url()
+
+
+def test_custom_network_with_only_soroban_rpc_url():
+    """Configuring only the Soroban RPC URL leaves Horizon unresolved."""
+    config = StellarConfig()
+    config.set('stellar.network', 'local')
+    config.set('stellar.soroban_rpc_url', 'https://rpc.local.example')
+
+    assert config.get_soroban_rpc_url() == 'https://rpc.local.example'
+
+    with pytest.raises(StellarEndpointError):
+        config.get_horizon_url()
+
+
+def test_custom_network_with_both_urls():
+    config = StellarConfig()
+    config.set('stellar.network', 'local')
+    config.set('stellar.horizon_url', 'https://horizon.local.example')
+    config.set('stellar.soroban_rpc_url', 'https://rpc.local.example')
+
+    assert config.get_horizon_url() == 'https://horizon.local.example'
+    assert config.get_soroban_rpc_url() == 'https://rpc.local.example'
+
+
+def test_switching_back_to_known_network_restores_defaults():
+    config = StellarConfig()
+    config.set('stellar.network', 'local')
+    config.set('stellar.network', 'mainnet')
+
+    assert config.get_horizon_url() == 'https://horizon.stellar.org'
+    assert config.get_soroban_rpc_url() == 'https://soroban-rpc.stellar.org'
+
+
+def test_load_from_env_known_network_defaults(monkeypatch):
+    """Environment configuration resolves known network defaults."""
+    monkeypatch.setenv('STELLAR_NETWORK', 'mainnet')
+    monkeypatch.delenv('STELLAR_HORIZON_URL', raising=False)
+    monkeypatch.delenv('STELLAR_SOROBAN_RPC_URL', raising=False)
 
     config = StellarConfig()
     config.load_from_env()
 
-    assert config.get_soroban_rpc_url() == 'https://rpc.env.example'
+    assert config.get('stellar.network') == 'mainnet'
+    assert config.get_horizon_url() == 'https://horizon.stellar.org'
+    assert config.get_soroban_rpc_url() == 'https://soroban-rpc.stellar.org'
+
+
+def test_custom_network_from_environment_requires_explicit_urls(monkeypatch):
+    monkeypatch.setenv('STELLAR_NETWORK', 'local')
+    monkeypatch.delenv('STELLAR_HORIZON_URL', raising=False)
+    monkeypatch.delenv('STELLAR_SOROBAN_RPC_URL', raising=False)
+
+    config = StellarConfig()
+    config.load_from_env()
+
+    assert config.get('stellar.network') == 'local'
+    with pytest.raises(StellarEndpointError):
+        config.get_horizon_url()
+    with pytest.raises(StellarEndpointError):
+        config.get_soroban_rpc_url()
+
+
+def test_custom_network_from_environment_with_one_url(monkeypatch):
+    monkeypatch.setenv('STELLAR_NETWORK', 'local')
+    monkeypatch.setenv('STELLAR_HORIZON_URL', 'https://horizon.env.example')
+    monkeypatch.delenv('STELLAR_SOROBAN_RPC_URL', raising=False)
+
+    config = StellarConfig()
+    config.load_from_env()
+
+    assert config.get_horizon_url() == 'https://horizon.env.example'
+    with pytest.raises(StellarEndpointError):
+        config.get_soroban_rpc_url()
+
+
+def test_custom_network_from_json_file_requires_explicit_urls(tmp_path):
+    path = tmp_path / 'config.json'
+    path.write_text(json.dumps({'stellar': {'network': 'local'}}))
+
+    config = StellarConfig()
+    config.load_from_file(path)
+
+    with pytest.raises(StellarEndpointError):
+        config.get_horizon_url()
+    with pytest.raises(StellarEndpointError):
+        config.get_soroban_rpc_url()
+
+
+def test_custom_network_from_json_file_with_one_url(tmp_path):
+    path = tmp_path / 'config.json'
+    # The explicit URL is listed before the network to prove ordering does not
+    # let the network selection clear it.
+    path.write_text(json.dumps({
+        'stellar': {
+            'horizon_url': 'https://horizon.file.example',
+            'network': 'local',
+        },
+    }))
+
+    config = StellarConfig()
+    config.load_from_file(path)
+
+    assert config.get_horizon_url() == 'https://horizon.file.example'
+    with pytest.raises(StellarEndpointError):
+        config.get_soroban_rpc_url()
+
+
+def test_custom_network_from_yaml_file_with_one_url(tmp_path):
+    pytest.importorskip('yaml')
+    path = tmp_path / 'config.yaml'
+    path.write_text(
+        'stellar:\n'
+        '  soroban_rpc_url: https://rpc.file.example\n'
+        '  network: local\n'
+    )
+
+    config = StellarConfig()
+    config.load_from_file(path)
+
+    assert config.get_soroban_rpc_url() == 'https://rpc.file.example'
+    with pytest.raises(StellarEndpointError):
+        config.get_horizon_url()
 
 
 def test_is_known_network():
@@ -79,44 +265,17 @@ def test_is_known_network():
     assert config.is_known_network() is False
 
 
-def test_load_from_env():
-    """Test loading from environment variables."""
-    old_network = os.environ.get('STELLAR_NETWORK')
-    old_horizon_url = os.environ.get('STELLAR_HORIZON_URL')
-    try:
-        os.environ['STELLAR_NETWORK'] = 'mainnet'
-        os.environ['STELLAR_HORIZON_URL'] = 'https://env.example'
-
-        config = StellarConfig()
-        config.load_from_env()
-
-        assert config.get('stellar.network') == 'mainnet'
-        assert config.get('stellar.horizon_url') == 'https://env.example'
-    finally:
-        if old_network is None:
-            os.environ.pop('STELLAR_NETWORK', None)
-        else:
-            os.environ['STELLAR_NETWORK'] = old_network
-        if old_horizon_url is None:
-            os.environ.pop('STELLAR_HORIZON_URL', None)
-        else:
-            os.environ['STELLAR_HORIZON_URL'] = old_horizon_url
-
-
 def test_validation():
     """Test validation of network field."""
     config = StellarConfig()
-    # The validation currently only checks that it's a string, so any string passes.
-    # We'll test that it accepts a string and rejects non-string.
+    # The validation only checks that the network is a string, so custom
+    # network names remain supported.
     config.validate('stellar.network', lambda v: isinstance(v, str))
     # This should not raise
     config.set('stellar.network', 'testnet')
 
-    # If we set a non-string, the validation in the Config class will catch it via type hints?
-    # Actually, the validation we added in StellarConfig is just for being a string.
-    # The type hint is set to str in set_default, so the type check will run.
-    # Let's test that setting a non-string fails the type check.
-    # We'll use validate_all to see if there's a type mismatch.
+    # The type hint is set to str in set_default, so the type check will run
+    # and report a non-string network.
     config.set('stellar.network', 123)
     errors = config.validate_all()
     # There should be a type mismatch error

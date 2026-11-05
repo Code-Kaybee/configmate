@@ -40,7 +40,9 @@ soroban_rpc_url = config.get_soroban_rpc_url()
 
 Set `STELLAR_NETWORK=mainnet` to select Mainnet defaults, or provide
 `STELLAR_HORIZON_URL` and `STELLAR_SOROBAN_RPC_URL` to override either endpoint.
-ConfigMate manages these settings; it does not replace the Stellar SDK or check
+Custom network names (for example `local`) are supported, but they never inherit
+Testnet URLs: each endpoint getter raises `StellarEndpointError` unless you set
+the matching endpoint URL explicitly. ConfigMate manages these settings; it does not replace the Stellar SDK or check
 whether an endpoint is reachable. See the
 [Stellar configuration guide](https://kairo-solutions.github.io/configmate/configuration/stellar/).
 
@@ -127,6 +129,8 @@ The `StellarConfig` class extends `Config` and provides:
   `stellar.soroban_rpc_url` (both endpoint URLs follow the selected known network)
 - Automatic loading from environment variables with `STELLAR_` prefix
 - Validation for the network field
+- Custom network names that require explicit endpoint URLs, with
+  `StellarEndpointError` raised when an endpoint is missing
 - Helper methods like `get_horizon_url()`, `get_soroban_rpc_url()`, and
   `is_known_network()`
 

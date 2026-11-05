@@ -17,10 +17,47 @@ horizon_url = config.get_horizon_url()
 soroban_rpc_url = config.get_soroban_rpc_url()
 ```
 
-By default, the network is `testnet`. Changing `stellar.network` updates both
-endpoint defaults together unless you explicitly set a custom URL. This keeps
-network selection in application configuration and avoids hard-coding endpoint
-URLs across Stellar application code.
+By default, the network is `testnet`. Changing `stellar.network` to another
+known network updates both endpoint defaults together unless you explicitly set
+a custom URL. This keeps network selection in application configuration and
+avoids hard-coding endpoint URLs across Stellar application code.
+
+## Known networks
+
+These network names always resolve to their matching endpoints:
+
+| Network | Horizon URL | Soroban RPC URL |
+| --- | --- | --- |
+| `testnet` | `https://horizon-testnet.stellar.org` | `https://soroban-testnet.stellar.org` |
+| `mainnet` | `https://horizon.stellar.org` | `https://soroban-rpc.stellar.org` |
+| `futurenet` | `https://horizon-futurenet.stellar.org` | `https://rpc-futurenet.stellar.org` |
+
+## Custom networks
+
+Any other network name, such as `local`, `standalone`, or a provider-specific
+name, is accepted. ConfigMate has no endpoint defaults for these names, so each
+endpoint you use must be configured explicitly. A custom network never inherits
+the Testnet URLs; instead, each endpoint getter raises `StellarEndpointError`
+when that endpoint has no custom URL:
+
+```python
+from configmate import StellarConfig, StellarEndpointError
+
+config = StellarConfig()
+config.set('stellar.network', 'local')
+config.set('stellar.horizon_url', 'http://localhost:8000')
+
+config.get_horizon_url()      # 'http://localhost:8000'
+config.get_soroban_rpc_url()  # raises StellarEndpointError
+```
+
+Configuring only one endpoint does not block the other: `get_horizon_url()`
+works when `stellar.horizon_url` is set, and `get_soroban_rpc_url()` works when
+`stellar.soroban_rpc_url` is set. The error message names the missing key and
+the matching environment variable, so a missing custom endpoint fails visibly
+instead of silently pointing the application at Testnet.
+
+`StellarEndpointError` is a subclass of `ValueError`.
 
 ## Environment variables
 
@@ -32,8 +69,32 @@ URLs across Stellar application code.
 | `STELLAR_HORIZON_URL` | Override the Horizon endpoint |
 | `STELLAR_SOROBAN_RPC_URL` | Override the Soroban RPC endpoint |
 
-For example, set `STELLAR_NETWORK=mainnet` to use the Mainnet endpoint defaults,
-or set either URL variable to use a custom endpoint.
+For example, set `STELLAR_NETWORK=mainnet` to use the Mainnet endpoint defaults.
+For a custom network, set each endpoint you need as well:
+
+```bash
+STELLAR_NETWORK=local
+STELLAR_HORIZON_URL=http://localhost:8000
+STELLAR_SOROBAN_RPC_URL=http://localhost:8001
+```
+
+## Configuration files
+
+`load_from_file()` applies the same endpoint rules for JSON and YAML files:
+
+```json
+{
+  "stellar": {
+    "network": "local",
+    "horizon_url": "http://localhost:8000"
+  }
+}
+```
+
+With this file, `get_horizon_url()` returns the configured URL and
+`get_soroban_rpc_url()` raises `StellarEndpointError`. Environment variables
+and files produce the same endpoint resolution for the same values, and key
+order within a file does not matter.
 
 ## Features
 
@@ -43,7 +104,8 @@ The `StellarConfig` class extends `Config` and provides:
   Mainnet, and Futurenet
 - Automatic loading from environment variables with the `STELLAR_` prefix
 - Helpers to retrieve endpoint URLs and identify the three preset networks
-- Support for custom network names and endpoint overrides
+- Support for custom network names with explicit endpoint overrides
+- Clear errors instead of a Testnet fallback when a custom endpoint is missing
 
 `is_known_network()` only identifies whether the configured name is one of the
 three presets; custom names are allowed. ConfigMate manages configuration only:
