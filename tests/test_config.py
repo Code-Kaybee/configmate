@@ -318,6 +318,68 @@ def test_set_nested():
     assert config.get('a.b') == {'existing': 'value', 'new_key': 'new_value'}
 
 
+def test_to_dict_returns_ordinary_dict():
+    """Test that to_dict() returns an ordinary, independent dictionary."""
+    config = Config()
+    config.set('debug', True)
+    config.set('database.host', 'localhost')
+
+    result = config.to_dict()
+
+    assert type(result) is dict
+    assert result == {'debug': True, 'database': {'host': 'localhost'}}
+
+    # Mutating the outer mapping must not affect the Config instance.
+    result['debug'] = False
+    result['extra'] = 'value'
+    del result['database']
+    assert config.get('debug') is True
+    assert config.get('extra') is None
+    assert config.get('database.host') == 'localhost'
+
+
+def test_to_dict_nested_dict_is_independent():
+    """Test that mutating a nested dict in to_dict() leaves Config unchanged."""
+    config = Config()
+    config.set('database', {'host': 'localhost', 'options': {'ssl': True}})
+
+    result = config.to_dict()
+    result['database']['host'] = 'prod-server'
+    result['database']['options']['ssl'] = False
+    result['database']['options']['timeout'] = 30
+
+    assert config.get('database.host') == 'localhost'
+    assert config.get('database.options.ssl') is True
+    assert config.get('database.options.timeout') is None
+
+
+def test_to_dict_nested_list_is_independent():
+    """Test that mutating a nested list in to_dict() leaves Config unchanged."""
+    config = Config()
+    config.set('servers', [{'name': 'a', 'ports': [80]}, 'b'])
+
+    result = config.to_dict()
+    result['servers'].append('c')
+    result['servers'][0]['name'] = 'changed'
+    result['servers'][0]['ports'].append(443)
+    result['servers'][1] = 'changed'
+
+    assert config.get('servers') == [{'name': 'a', 'ports': [80]}, 'b']
+
+
+def test_to_dict_non_container_values_are_shared_by_reference():
+    """Test that unsupported/custom values are passed through unchanged."""
+    marker = object()
+    config = Config()
+    config.set('marker', marker)
+    config.set('pair', (1, 2))
+
+    result = config.to_dict()
+
+    assert result['marker'] is marker
+    assert result['pair'] is config.get('pair')
+
+
 def test_bool_conversion_rejects_invalid():
     """Test that invalid boolean values are rejected instead of silently becoming False."""
     import os

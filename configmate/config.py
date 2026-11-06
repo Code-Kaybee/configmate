@@ -138,9 +138,28 @@ class Config:
         return errors
     
     def to_dict(self) -> Dict[str, Any]:
-        """Return the entire configuration as a dictionary."""
-        return self._config.copy()
+        """Return an independent snapshot of the entire configuration.
+
+        The returned value is an ordinary ``dict``. Nested ``dict`` and
+        ``list`` values are rebuilt recursively, so mutating any of them
+        in the result never affects this ``Config`` instance.
+
+        Values of other types (scalars, tuples, sets, custom objects) are
+        copied by reference rather than being serialized or deep-copied;
+        mutating such a value in place, where the type allows it, is still
+        visible through both objects. Only containers built from ``dict``
+        and ``list`` are guaranteed to be independent.
+        """
+        return self._copy_value(self._config)
     
+    def _copy_value(self, value: Any) -> Any:
+        """Recursively copy supported mutable containers (dict and list)."""
+        if isinstance(value, dict):
+            return {key: self._copy_value(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [self._copy_value(item) for item in value]
+        return value
+
     TRUE_BOOL_SPELLINGS = ('true', '1', 'yes', 'on')
     FALSE_BOOL_SPELLINGS = ('false', '0', 'no', 'off')
 

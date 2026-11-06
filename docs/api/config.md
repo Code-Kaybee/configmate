@@ -19,7 +19,13 @@ For the full API, see the [source code](https://github.com/kairo-solutions/confi
 - `get(key, default=None)`: Get a configuration value, supporting nested keys.
 - `set(key, value)`: Set a configuration value, supporting nested keys.
 - `validate_all()`: Validate all configuration and return list of errors.
-- `to_dict()`: Return the entire configuration as a dictionary.
+- `to_dict()`: Return an independent snapshot of the entire configuration as an
+  ordinary `dict`. Nested `dict` and `list` values are copied recursively, so
+  mutating them in the result never changes the `Config` instance. Other value
+  types (scalars, tuples, sets, custom objects) are returned by reference and
+  are not serialized, so an in-place mutation of such a value is visible to both
+  objects; `to_dict()` does not implicitly deep-copy or convert them. Use
+  `copy.deepcopy(config.to_dict())` if you need those values isolated too.
 
 ## Nested Keys
 
